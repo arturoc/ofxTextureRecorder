@@ -10,19 +10,16 @@
 ofxTextureRecorder::ofxTextureRecorder()
 :firstFrame(true){
     downloadThread = std::thread([&]{
-        unsigned char * p;
-        while(channel.receive(p)){
+        std::pair<std::string, unsigned char *> data;
+        while(channel.receive(data)){
             ofPixels pixels;
-            pixels.setFromPixels(p,width,height,pixelFormat);
+            pixels.setFromPixels(data.second, width, height, pixelFormat);
             channelReady.send(true);
-            char buf[10];
-            sprintf(buf, "%05d.%s", frame++, ofImageFormatExtension(imageFormat).c_str());
-            std::string name(buf);
-            pixelsChannel.send(std::move(std::make_pair(name, std::move(pixels))));
+			pixelsChannel.send(std::move(std::make_pair(data.first, std::move(pixels))));
         }
     });
     auto numThreads = std::max(1u,std::thread::hardware_concurrency() - 2);
-    ofLogNotice() << "Initializing with " << numThreads << " encoding threads " << endl;
+    ofLogNotice(__FUNCTION__) << "Initializing with " << numThreads << " encoding threads " << endl;
     for(size_t i=0;i<numThreads;i++){
         encodeThreads.emplace_back([&]{
             std::pair<std::string, ofPixels> pixels;
@@ -62,17 +59,26 @@ ofxTextureRecorder::~ofxTextureRecorder(){
     saveThread.join();
 }
 
-void ofxTextureRecorder::setup(int w, int h, ofPixelFormat pixelFormat_, ofImageFormat imageFormat_){
+void ofxTextureRecorder::setup(int w, int h, ofPixelFormat pixelFormat_, ofImageFormat imageFormat_, const string& folderPath_){
     width = w;
     height = h;
     pixelFormat = pixelFormat_;
     imageFormat = imageFormat_;
+	
+	folderPath = folderPath_;
+	if (!folderPath.empty()) folderPath = ofFilePath::addTrailingSlash(folderPath);
+
+	frame = 0;
     firstFrame = true;
     pixelBufferBack.allocate(ofPixels::bytesFromPixelFormat(w,h,pixelFormat), GL_DYNAMIC_READ);
     pixelBufferFront.allocate(ofPixels::bytesFromPixelFormat(w,h,pixelFormat), GL_DYNAMIC_READ);
 }
 
 void ofxTextureRecorder::save(const ofTexture & tex){
+	save(tex, frame++);
+}
+
+void ofxTextureRecorder::save(const ofTexture & tex, int frame_){
     if(!firstFrame){
         bool ready;
         channelReady.receive(ready);
@@ -86,9 +92,11 @@ void ofxTextureRecorder::save(const ofTexture & tex){
     pixelBufferFront.bind(GL_PIXEL_UNPACK_BUFFER);
     auto pixels = pixelBufferFront.map<unsigned char>(GL_READ_ONLY);
     if(pixels){
-        channel.send(pixels);
+		std::ostringstream oss;
+		oss << folderPath << ofToString(frame_, 5, '0') << "." << ofImageFormatExtension(imageFormat);
+		channel.send(std::make_pair(oss.str(), pixels));
     }else{
-        ofLogError("ImageSaverThread") << "Couldn't map buffer";
+        ofLogError(__FUNCTION__) << "Couldn't map buffer";
     }
     swap(pixelBufferBack,pixelBufferFront);
 }

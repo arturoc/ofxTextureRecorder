@@ -11,11 +11,12 @@ class ofxTextureRecorder{
 public:
     ofxTextureRecorder();
     ~ofxTextureRecorder();
-    void setup(int w, int h, ofPixelFormat pixelFormat, ofImageFormat imageFormat_);
-    void save(const ofTexture & tex);
+    void setup(int w, int h, ofPixelFormat pixelFormat, ofImageFormat imageFormat, const string& folderPath = "");
+	void save(const ofTexture & tex);
+	void save(const ofTexture & tex, int frame);
 
 private:
-    ofThreadChannel<unsigned char *> channel;
+    ofThreadChannel<std::pair<std::string, unsigned char *>> channel;
     ofThreadChannel<std::pair<std::string, ofPixels>> pixelsChannel;
     ofThreadChannel<std::pair<std::string, ofBuffer>> encodedChannel;
     ofThreadChannel<bool> channelReady;
@@ -23,6 +24,7 @@ private:
     ofBufferObject pixelBufferBack, pixelBufferFront;
     ofPixelFormat pixelFormat;
     ofImageFormat imageFormat;
+	std::string folderPath;
     int width;
     int height;
     int frame = 0;
