@@ -19,7 +19,7 @@ ofxTextureRecorder::ofxTextureRecorder()
         }
     });
     auto numThreads = std::max(1u,std::thread::hardware_concurrency() - 2);
-    ofLogNotice(__FUNCTION__) << "Initializing with " << numThreads << " encoding threads " << endl;
+    ofLogNotice(__FUNCTION__) << "Initializing with " << numThreads << " encoding threads";
     for(size_t i=0;i<numThreads;i++){
         encodeThreads.emplace_back([&]{
             std::pair<std::string, ofPixels> pixels;
