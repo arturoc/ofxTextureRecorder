@@ -76,11 +76,12 @@ void ofxTextureRecorder::stopThreads(){
 	for(auto &t: encodeThreads){
 		t.join();
 	}
+	encodeThreads.clear();
 	downloadThread.join();
 	saveThread.join();
 }
 
-void ofxTextureRecorder::createThreads(int numThreads){
+void ofxTextureRecorder::createThreads(size_t numThreads){
 	if(!encodeThreads.empty()){
 		stopThreads();
 	}
@@ -91,7 +92,7 @@ void ofxTextureRecorder::createThreads(int numThreads){
 			ofPixels pixels;
 			pixels.setFromPixels(data.second, width, height, pixelFormat);
 			channelReady.send(true);
-			pixelsChannel.send(std::move(std::make_pair(data.first, std::move(pixels))));
+			pixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
 		}
 	});
 	ofLogNotice(__FUNCTION__) << "Initializing with " << numThreads << " encoding threads";
@@ -101,7 +102,7 @@ void ofxTextureRecorder::createThreads(int numThreads){
 			while(pixelsChannel.receive(pixels)){
 				ofBuffer buffer;
 				ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
-				encodedChannel.send(std::move(std::make_pair(pixels.first, std::move(buffer))));
+				encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
 			}
 		});
 	}

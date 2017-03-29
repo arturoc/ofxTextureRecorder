@@ -20,7 +20,7 @@ public:
 		ofImageFormat imageFormat = OF_IMAGE_FORMAT_PNG;
 		string folderPath;
 		// default number encoding threads == number of hw cores - 2
-		int numThreads = std::max(1u, std::thread::hardware_concurrency() - 2);
+		size_t numThreads = std::max(1u, std::thread::hardware_concurrency() - 2);
 	};
 	void setup(int w, int h);
 	void setup(const Settings & settings);
@@ -29,7 +29,7 @@ public:
 
 private:
 	void stopThreads();
-	void createThreads(int numThreads);
+	void createThreads(size_t numThreads);
     ofThreadChannel<std::pair<std::string, unsigned char *>> channel;
     ofThreadChannel<std::pair<std::string, ofPixels>> pixelsChannel;
     ofThreadChannel<std::pair<std::string, ofBuffer>> encodedChannel;
