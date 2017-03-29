@@ -2,22 +2,21 @@
 
 //--------------------------------------------------------------
 void ofApp::setup(){
-	ofxTextureRecorder::Settings settings(ofGetWidth(), ofGetHeight());
-	settings.pixelFormat = OF_PIXELS_RGB;
-	settings.imageFormat = OF_IMAGE_FORMAT_PNG;
-
-	recorder.setup(settings);
 	fbo.allocate(ofGetWidth(), ofGetHeight(), GL_RGB);
+
+	ofxTextureRecorder::Settings settings(fbo.getTexture());
+	settings.imageFormat = OF_IMAGE_FORMAT_JPEG;
+	recorder.setup(settings);
 }
 
 //--------------------------------------------------------------
 void ofApp::update(){
 	fbo.begin();
-	ofClear(0);
+	ofClear(0,255);
 	ofDrawCircle(ofGetFrameNum(), ofGetWidth()/2, 50);
 	fbo.end();
 	recorder.save(fbo.getTexture());
-	if(ofGetFrameNum()>ofGetWidth() + 50){
+	if(ofGetFrameNum() > ofGetWidth() + 50){
 		ofExit(0);
 	}
 }
@@ -25,6 +24,11 @@ void ofApp::update(){
 //--------------------------------------------------------------
 void ofApp::draw(){
 	fbo.draw(0,0);
+
+	if(ofGetFrameNum()%60==0){
+		cout << ofGetFrameRate() << endl;
+	}
+
 }
 
 //--------------------------------------------------------------
