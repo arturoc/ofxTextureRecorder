@@ -6,6 +6,7 @@
  */
 
 #include "ofxTextureRecorder.h"
+#include "half.hpp"
 
 ofxTextureRecorder::~ofxTextureRecorder(){
 	if(!encodeThreads.empty()){
@@ -17,20 +18,45 @@ void ofxTextureRecorder::setup(int w, int h){
 	setup(Settings(w,h));
 }
 
+void ofxTextureRecorder::setup(const ofTexture & tex){
+	setup(Settings(tex));
+}
+
+void ofxTextureRecorder::setup(const ofTextureData & texData){
+	setup(Settings(texData));
+}
+
 void ofxTextureRecorder::setup(const Settings & settings){
-	createThreads(settings.numThreads);
+	if(!encodeThreads.empty()){
+		stopThreads();
+	}
 	width = settings.w;
 	height = settings.h;
 	pixelFormat = settings.pixelFormat;
 	imageFormat = settings.imageFormat;
 	folderPath = settings.folderPath;
-
+	glType = settings.glType;
 	if (!folderPath.empty()) folderPath = ofFilePath::addTrailingSlash(folderPath);
 
 	frame = 0;
     firstFrame = true;
-	pixelBufferBack.allocate(ofPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
-	pixelBufferFront.allocate(ofPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
+	switch(glType){
+		case GL_UNSIGNED_BYTE:
+			pixelBufferBack.allocate(ofPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
+			pixelBufferFront.allocate(ofPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
+		break;
+		case GL_SHORT:
+		case GL_UNSIGNED_SHORT:
+			pixelBufferBack.allocate(ofShortPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
+			pixelBufferFront.allocate(ofShortPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
+		break;
+		case GL_FLOAT:
+		case GL_HALF_FLOAT:
+			pixelBufferBack.allocate(ofFloatPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
+			pixelBufferFront.allocate(ofFloatPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
+		break;
+	}
+	createThreads(settings.numThreads);
 }
 
 void ofxTextureRecorder::save(const ofTexture & tex){
@@ -47,7 +73,7 @@ void ofxTextureRecorder::save(const ofTexture & tex, int frame_){
     tex.copyTo(pixelBufferBack);
 
     //pixelBufferFront.invalidate();
-    //ofSetPixelStoreiAlignment(GL_PIXEL_UNPACK_BUFFER, width, 1, 3);
+	//ofSetPixelStoreiAlignment(GL_PIXEL_UNPACK_BUFFER, width, 1, 3);
     pixelBufferFront.bind(GL_PIXEL_UNPACK_BUFFER);
     auto pixels = pixelBufferFront.map<unsigned char>(GL_READ_ONLY);
     if(pixels){
@@ -68,6 +94,8 @@ void ofxTextureRecorder::stopThreads(){
 		ofSleepMillis(100);
 	}
 	pixelsChannel.close();
+	shortPixelsChannel.close();
+	floatPixelsChannel.close();
 
 	while(!encodedChannel.empty()){
 		ofSleepMillis(100);
@@ -82,27 +110,80 @@ void ofxTextureRecorder::stopThreads(){
 }
 
 void ofxTextureRecorder::createThreads(size_t numThreads){
-	if(!encodeThreads.empty()){
-		stopThreads();
-	}
-
 	downloadThread = std::thread([&]{
 		std::pair<std::string, unsigned char *> data;
-		while(channel.receive(data)){
-			ofPixels pixels;
-			pixels.setFromPixels(data.second, width, height, pixelFormat);
-			channelReady.send(true);
-			pixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+		switch(glType){
+			case GL_UNSIGNED_BYTE:{
+				ofPixels pixels;
+				pixels.allocate(width, height, pixelFormat);
+				while(channel.receive(data)){
+					pixels.setFromPixels(data.second, width, height, pixelFormat);
+					channelReady.send(true);
+					pixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+				}
+			}break;
+			case GL_SHORT:
+			case GL_UNSIGNED_SHORT:{
+				ofShortPixels pixels;
+				pixels.allocate(width, height, pixelFormat);
+				while(channel.receive(data)){
+					pixels.setFromPixels((unsigned short*)data.second, width, height, pixelFormat);
+					channelReady.send(true);
+					shortPixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+				}
+			}break;
+			case GL_FLOAT:
+			case GL_HALF_FLOAT:{
+				ofFloatPixels pixels;
+				pixels.allocate(width, height, pixelFormat);
+				while(channel.receive(data)){
+					if(glType == GL_FLOAT){
+						pixels.setFromPixels((float*)data.second, width, height, pixelFormat);
+					}else{
+						auto halfdata = (half_float::half*)data.second;
+						for(auto & p: pixels){
+							p = *halfdata++;
+						}
+					}
+					channelReady.send(true);
+					floatPixelsChannel.send(std::make_pair(data.first, pixels));
+				}
+			}break;
 		}
 	});
+
+
 	ofLogNotice(__FUNCTION__) << "Initializing with " << numThreads << " encoding threads";
 	for(size_t i=0;i<numThreads;i++){
 		encodeThreads.emplace_back([&]{
-			std::pair<std::string, ofPixels> pixels;
-			while(pixelsChannel.receive(pixels)){
-				ofBuffer buffer;
-				ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
-				encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
+			switch(glType){
+				case GL_UNSIGNED_BYTE:{
+					std::pair<std::string, ofPixels> pixels;
+					while(pixelsChannel.receive(pixels)){
+						ofBuffer buffer;
+						ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
+						encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
+					}
+				}break;
+				case GL_SHORT:
+				case GL_UNSIGNED_SHORT:{
+					std::pair<std::string, ofShortPixels> pixels;
+					while(shortPixelsChannel.receive(pixels)){
+						ofBuffer buffer;
+						ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
+						encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
+					}
+				}break;
+				case GL_FLOAT:
+				case GL_HALF_FLOAT:{
+					std::pair<std::string, ofFloatPixels> pixels;
+					ofBuffer buffer;
+					while(floatPixelsChannel.receive(pixels)){
+						buffer.clear();
+						ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
+						encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
+					}
+				}break;
 			}
 		});
 	}
@@ -113,4 +194,33 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 			file.writeFromBuffer(encoded.second);
 		}
 	});
+}
+
+ofxTextureRecorder::Settings::Settings(int w, int h)
+:w(w)
+,h(h){}
+
+ofxTextureRecorder::Settings::Settings(const ofTexture & tex)
+	:ofxTextureRecorder::Settings(tex.getTextureData()){}
+
+ofxTextureRecorder::Settings::Settings(const ofTextureData & texData)
+:w(texData.width)
+,h(texData.height)
+,textureInternalFormat(texData.glInternalFormat){
+	switch(ofGetImageTypeFromGLType(texData.glInternalFormat)){
+		case OF_IMAGE_COLOR:
+			pixelFormat = OF_PIXELS_RGB;
+		break;
+		case OF_IMAGE_COLOR_ALPHA:
+			pixelFormat = OF_PIXELS_RGBA;
+			cout << "rgba" << endl;
+		break;
+		case OF_IMAGE_GRAYSCALE:
+			pixelFormat = OF_PIXELS_GRAY;
+		break;
+		default:
+			ofLogError("ofxTextureRecorder") << "Unsupported texture format";
+	}
+	glType = ofGetGlTypeFromInternal(texData.glInternalFormat);
+
 }
