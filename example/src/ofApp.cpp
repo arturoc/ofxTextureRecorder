@@ -2,10 +2,11 @@
 
 //--------------------------------------------------------------
 void ofApp::setup(){
-	fbo.allocate(ofGetWidth(), ofGetHeight(), GL_RGB);
+	fbo.allocate(3600, 1080, GL_RGB16F);
 
 	ofxTextureRecorder::Settings settings(fbo.getTexture());
-	settings.imageFormat = OF_IMAGE_FORMAT_JPEG;
+	settings.imageFormat = OF_IMAGE_FORMAT_PNG;
+	settings.numThreads = 12;
 	recorder.setup(settings);
 }
 

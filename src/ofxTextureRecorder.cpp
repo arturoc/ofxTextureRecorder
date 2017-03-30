@@ -6,7 +6,6 @@
  */
 
 #include "ofxTextureRecorder.h"
-#include "half.hpp"
 
 ofxTextureRecorder::~ofxTextureRecorder(){
 	if(!encodeThreads.empty()){
@@ -56,6 +55,19 @@ void ofxTextureRecorder::setup(const Settings & settings){
 			pixelBufferFront.allocate(ofFloatPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
 		break;
 	}
+	auto numChannels = 0;
+	switch(pixelFormat){
+		case OF_PIXELS_RGB:
+			numChannels = 3;
+		break;
+		case OF_PIXELS_RGBA:
+			numChannels = 4;
+		break;
+		case OF_PIXELS_GRAY:
+			numChannels = 1;
+		break;
+	};
+	size = width * height * numChannels;
 	createThreads(settings.numThreads);
 }
 
@@ -90,12 +102,37 @@ void ofxTextureRecorder::stopThreads(){
 	channel.close();
 	channelReady.close();
 
-	while(!pixelsChannel.empty()){
-		ofSleepMillis(100);
+	switch(glType){
+		case GL_UNSIGNED_BYTE:
+			while(!pixelsChannel.empty()){
+				ofSleepMillis(100);
+			}
+			pixelsChannel.close();
+		break;
+		case GL_SHORT:
+		case GL_UNSIGNED_SHORT:
+			while(!shortPixelsChannel.empty()){
+				ofSleepMillis(100);
+			}
+			shortPixelsChannel.close();
+		break;
+		case GL_FLOAT:
+			while(!floatPixelsChannel.empty()){
+				ofSleepMillis(100);
+			}
+			floatPixelsChannel.close();
+		break;
+		case GL_HALF_FLOAT:
+			while(!halffloatPixelsChannel.empty()){
+				ofSleepMillis(100);
+			}
+			halffloatPixelsChannel.close();
+			while(!floatPixelsChannel.empty()){
+				ofSleepMillis(100);
+			}
+			floatPixelsChannel.close();
+		break;
 	}
-	pixelsChannel.close();
-	shortPixelsChannel.close();
-	floatPixelsChannel.close();
 
 	while(!encodedChannel.empty()){
 		ofSleepMillis(100);
@@ -110,47 +147,92 @@ void ofxTextureRecorder::stopThreads(){
 }
 
 void ofxTextureRecorder::createThreads(size_t numThreads){
-	downloadThread = std::thread([&]{
-		std::pair<std::string, unsigned char *> data;
+	for(size_t i=0; i<numThreads; i++){
 		switch(glType){
 			case GL_UNSIGNED_BYTE:{
 				ofPixels pixels;
 				pixels.allocate(width, height, pixelFormat);
-				while(channel.receive(data)){
-					pixels.setFromPixels(data.second, width, height, pixelFormat);
-					channelReady.send(true);
-					pixelsChannel.send(std::make_pair(data.first, pixels));
-				}
-			}break;
+				returnPixelsChannel.send(std::move(pixels));
+				poolSize += 1;
+			}
 			case GL_SHORT:
 			case GL_UNSIGNED_SHORT:{
 				ofShortPixels pixels;
 				pixels.allocate(width, height, pixelFormat);
-				while(channel.receive(data)){
-					pixels.setFromPixels((unsigned short*)data.second, width, height, pixelFormat);
-					channelReady.send(true);
-					shortPixelsChannel.send(std::make_pair(data.first, pixels));
-				}
-			}break;
-			case GL_FLOAT:
-			case GL_HALF_FLOAT:{
+				returnShortPixelsChannel.send(std::move(pixels));
+				shortPoolSize += 1;
+			}
+			case GL_FLOAT:{
 				ofFloatPixels pixels;
 				pixels.allocate(width, height, pixelFormat);
+				returnFloatPixelsChannel.send(std::move(pixels));
+				floatPoolSize += 1;
+			}
+			case GL_HALF_FLOAT:{
+				std::vector<half_float::half> pixels;
+				pixels.resize(size);
+				returnHalfFloatPixelsChannel.send(std::move(pixels));
+				halfFloatPoolSize += 1;
+			}
+		}
+	}
+
+	downloadThread = std::thread([&]{
+		std::pair<std::string, unsigned char *> data;
+		switch(glType){
+			case GL_UNSIGNED_BYTE:{
 				while(channel.receive(data)){
-					if(glType == GL_FLOAT){
-						pixels.setFromPixels((float*)data.second, width, height, pixelFormat);
-					}else{
-						auto halfdata = (half_float::half*)data.second;
-						for(auto & p: pixels){
-							p = *halfdata++;
-						}
-					}
+					ofPixels pixels = getBuffer();
+					pixels.setFromPixels(data.second, width, height, pixelFormat);
 					channelReady.send(true);
-					floatPixelsChannel.send(std::make_pair(data.first, pixels));
+					pixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+				}
+			}break;
+			case GL_SHORT:
+			case GL_UNSIGNED_SHORT:{
+				while(channel.receive(data)){
+					ofShortPixels pixels = getShortBuffer();
+					pixels.setFromPixels((unsigned short*)data.second, width, height, pixelFormat);
+					channelReady.send(true);
+					shortPixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+				}
+			}break;
+			case GL_FLOAT:{
+				while(channel.receive(data)){
+					ofFloatPixels pixels = getFloatBuffer();
+					pixels.setFromPixels((float*)data.second, width, height, pixelFormat);
+					channelReady.send(true);
+					floatPixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+				}
+			}break;
+			case GL_HALF_FLOAT:{
+				while(channel.receive(data)){
+					std::vector<half_float::half> halfdata = getHalfFloatBuffer();
+					auto halfptr = (half_float::half*)data.second;
+					halfdata.assign(halfptr, halfptr + size);
+					channelReady.send(true);
+					halffloatPixelsChannel.send(std::make_pair(data.first, std::move(halfdata)));
 				}
 			}break;
 		}
 	});
+
+	if(glType==GL_HALF_FLOAT){
+		for(size_t i=0;i<numThreads/2;i++){
+			halfDecodingThreads.emplace_back(([&]{
+				std::pair<std::string, std::vector<half_float::half>> halfdata;
+				while(halffloatPixelsChannel.receive(halfdata)){
+					ofFloatPixels pixels = getFloatBuffer();
+					auto halfptr = halfdata.second.data();
+					for(auto & p: pixels){
+						p = *halfptr++;
+					}
+					returnHalfFloatPixelsChannel.send(std::move(halfdata.second));
+					floatPixelsChannel.send(std::make_pair(halfdata.first, std::move(pixels)));
+				}
+			}));
+		}
+	}
 
 
 	ofLogNotice(__FUNCTION__) << "Initializing with " << numThreads << " encoding threads";
@@ -162,6 +244,7 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 					while(pixelsChannel.receive(pixels)){
 						ofBuffer buffer;
 						ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
+						returnPixelsChannel.send(std::move(pixels.second));
 						encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
 					}
 				}break;
@@ -171,6 +254,7 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 					while(shortPixelsChannel.receive(pixels)){
 						ofBuffer buffer;
 						ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
+						returnShortPixelsChannel.send(std::move(pixels.second));
 						encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
 					}
 				}break;
@@ -181,6 +265,7 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 					while(floatPixelsChannel.receive(pixels)){
 						buffer.clear();
 						ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
+						returnFloatPixelsChannel.send(std::move(pixels.second));
 						encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
 					}
 				}break;
@@ -195,6 +280,58 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 		}
 	});
 }
+
+ofPixels ofxTextureRecorder::getBuffer(){
+	ofPixels pixels;
+	if(!returnPixelsChannel.tryReceive(pixels)){
+		if(poolSize<encodeThreads.size()*2){
+			pixels.allocate(width, height, pixelFormat);
+			poolSize += 1;
+		}else{
+			returnPixelsChannel.receive(pixels);
+		}
+	}
+	return pixels;
+};
+
+ofShortPixels ofxTextureRecorder::getShortBuffer(){
+	ofShortPixels pixels;
+	if(!returnShortPixelsChannel.tryReceive(pixels)){
+		if(shortPoolSize<encodeThreads.size()*2){
+			pixels.allocate(width, height, pixelFormat);
+			shortPoolSize += 1;
+		}else{
+			returnShortPixelsChannel.receive(pixels);
+		}
+	}
+	return pixels;
+};
+
+ofFloatPixels ofxTextureRecorder::getFloatBuffer(){
+	ofFloatPixels pixels;
+	if(!returnFloatPixelsChannel.tryReceive(pixels)){
+		if(floatPoolSize<encodeThreads.size()*2){
+			pixels.allocate(width, height, pixelFormat);
+			floatPoolSize += 1;
+		}else{
+			returnFloatPixelsChannel.receive(pixels);
+		}
+	}
+	return pixels;
+};
+
+std::vector<half_float::half> ofxTextureRecorder::getHalfFloatBuffer(){
+	std::vector<half_float::half> pixels;
+	if(!returnHalfFloatPixelsChannel.tryReceive(pixels)){
+		if(halfFloatPoolSize<encodeThreads.size()*2){
+			pixels.resize(size);
+			halfFloatPoolSize += 1;
+		}else{
+			returnHalfFloatPixelsChannel.receive(pixels);
+		}
+	}
+	return pixels;
+};
 
 ofxTextureRecorder::Settings::Settings(int w, int h)
 :w(w)
@@ -223,4 +360,31 @@ ofxTextureRecorder::Settings::Settings(const ofTextureData & texData)
 	}
 	glType = ofGetGlTypeFromInternal(texData.glInternalFormat);
 
+}
+
+template<class T>
+void ofxTextureRecorder::PixelsPool<T>::setup(size_t initialSize, size_t maxMemory, size_t memoryPerBuffer, std::function<T()> allocateBuffer){
+	this->initialSize = initialSize;
+	this->maxMemory = maxMemory;
+	this->memoryPerBuffer = memoryPerBuffer;
+	this->allocateBuffer = allocateBuffer;
+}
+
+template<class T>
+T ofxTextureRecorder::PixelsPool<T>::getBuffer(){
+	T pixels = this->allocateBuffer();
+	if(!returnChannel.tryReceive(pixels)){
+		if(poolSize * memoryPerBuffer < maxMemory){
+			poolSize += 1;
+			return allocateBuffer();
+		}else{
+			returnChannel.receive(pixels);
+		}
+	}
+	return pixels;
+}
+
+template<class T>
+void ofxTextureRecorder::PixelsPool<T>::returnBuffer(T&&buffer){
+	returnChannel.send(buffer);
 }

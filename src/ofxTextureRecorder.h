@@ -6,6 +6,7 @@
  */
 #pragma once
 #include "ofMain.h"
+#include "half.hpp"
 #include <future>
 class ofxTextureRecorder{
 public:
@@ -38,10 +39,23 @@ public:
 private:
 	void stopThreads();
 	void createThreads(size_t numThreads);
+	ofPixels getBuffer();
+	ofShortPixels getShortBuffer();
+	ofFloatPixels getFloatBuffer();
+	std::vector<half_float::half> getHalfFloatBuffer();
     ofThreadChannel<std::pair<std::string, unsigned char *>> channel;
     ofThreadChannel<std::pair<std::string, ofPixels>> pixelsChannel;
+	size_t poolSize = 0;
 	ofThreadChannel<std::pair<std::string, ofShortPixels>> shortPixelsChannel;
+	size_t shortPoolSize = 0;
 	ofThreadChannel<std::pair<std::string, ofFloatPixels>> floatPixelsChannel;
+	size_t floatPoolSize = 0;
+	ofThreadChannel<std::pair<std::string, std::vector<half_float::half>>> halffloatPixelsChannel;
+	size_t halfFloatPoolSize = 0;
+	ofThreadChannel<ofPixels> returnPixelsChannel;
+	ofThreadChannel<ofShortPixels> returnShortPixelsChannel;
+	ofThreadChannel<ofFloatPixels> returnFloatPixelsChannel;
+	ofThreadChannel<std::vector<half_float::half>> returnHalfFloatPixelsChannel;
     ofThreadChannel<std::pair<std::string, ofBuffer>> encodedChannel;
     ofThreadChannel<bool> channelReady;
 	bool firstFrame = true;
@@ -54,9 +68,26 @@ private:
 	int height = 0;
 	int frame = 0;
 	GLenum glType = GL_UNSIGNED_BYTE;
+	size_t size = 0;
     std::condition_variable done;
     std::vector<std::future<bool>> waiting;
     std::thread saveThread;
     std::vector<std::thread> encodeThreads;
+	std::vector<std::thread> halfDecodingThreads;
     std::thread downloadThread;
+
+	template<class T>
+	class PixelsPool{
+	public:
+		void setup(size_t initialSize, size_t maxMemory, size_t memoryPerBuffer, std::function<T()> allocateBuffer);
+		T getBuffer();
+		void returnBuffer(T&&buffer);
+
+	private:
+		ofThreadChannel<T> returnChannel;
+		size_t memoryPerBuffer = 0;
+		std::function<T()> allocateBuffer;
+		size_t poolSize = 0;
+		size_t maxMemory = 0;
+	};
 };
