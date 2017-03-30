@@ -67,7 +67,7 @@ void ofxTextureRecorder::save(const ofTexture & tex, int frame_){
     if(!firstFrame){
         bool ready;
         channelReady.receive(ready);
-        pixelBufferBack.unmap();
+		pixelBufferBack.unmap();
     }
     firstFrame = false;
     tex.copyTo(pixelBufferBack);
@@ -119,7 +119,7 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 				while(channel.receive(data)){
 					pixels.setFromPixels(data.second, width, height, pixelFormat);
 					channelReady.send(true);
-					pixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+					pixelsChannel.send(std::make_pair(data.first, pixels));
 				}
 			}break;
 			case GL_SHORT:
@@ -129,7 +129,7 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 				while(channel.receive(data)){
 					pixels.setFromPixels((unsigned short*)data.second, width, height, pixelFormat);
 					channelReady.send(true);
-					shortPixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+					shortPixelsChannel.send(std::make_pair(data.first, pixels));
 				}
 			}break;
 			case GL_FLOAT:
