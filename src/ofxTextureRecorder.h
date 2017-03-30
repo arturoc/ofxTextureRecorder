@@ -21,8 +21,10 @@ public:
 		GLenum textureInternalFormat = GL_RGB;
 		ofImageFormat imageFormat = OF_IMAGE_FORMAT_PNG;
 		string folderPath;
-		// default number encoding threads == number of hw cores - 2
+		/// number encoding threads, default == number of hw cores - 2
 		size_t numThreads = std::max(1u, std::thread::hardware_concurrency() - 2);
+		/// maximum RAM to use in bytes
+		size_t maxMemoryUsage = 2000000000;
 
 	private:
 		ofPixelFormat pixelFormat;
@@ -36,6 +38,10 @@ public:
     void save(const ofTexture & tex);
     void save(const ofTexture & tex, int frame);
 
+	uint64_t getAvgTimeGpuDownload() const;
+	uint64_t getAvgTimeEncode() const;
+	uint64_t getAvgTimeSave() const;
+	uint64_t getAvgTimeTextureCopy() const;
 private:
 	void stopThreads();
 	void createThreads(size_t numThreads);
@@ -43,7 +49,13 @@ private:
 	ofShortPixels getShortBuffer();
 	ofFloatPixels getFloatBuffer();
 	std::vector<half_float::half> getHalfFloatBuffer();
-    ofThreadChannel<std::pair<std::string, unsigned char *>> channel;
+	struct Buffer{
+		size_t id;
+		std::string path;
+		void * data;
+	};
+
+	ofThreadChannel<Buffer> channel;
     ofThreadChannel<std::pair<std::string, ofPixels>> pixelsChannel;
 	size_t poolSize = 0;
 	ofThreadChannel<std::pair<std::string, ofShortPixels>> shortPixelsChannel;
@@ -57,9 +69,9 @@ private:
 	ofThreadChannel<ofFloatPixels> returnFloatPixelsChannel;
 	ofThreadChannel<std::vector<half_float::half>> returnHalfFloatPixelsChannel;
     ofThreadChannel<std::pair<std::string, ofBuffer>> encodedChannel;
-    ofThreadChannel<bool> channelReady;
+	ofThreadChannel<size_t> channelReady;
 	bool firstFrame = true;
-    ofBufferObject pixelBufferBack, pixelBufferFront;
+	std::vector<ofBufferObject> pixelBuffers;
     ofPixelFormat pixelFormat;
     ofImageFormat imageFormat;
 
@@ -69,25 +81,16 @@ private:
 	int frame = 0;
 	GLenum glType = GL_UNSIGNED_BYTE;
 	size_t size = 0;
+	size_t maxMemoryUsage = 2000000000;
     std::condition_variable done;
     std::vector<std::future<bool>> waiting;
     std::thread saveThread;
     std::vector<std::thread> encodeThreads;
 	std::vector<std::thread> halfDecodingThreads;
-    std::thread downloadThread;
-
-	template<class T>
-	class PixelsPool{
-	public:
-		void setup(size_t initialSize, size_t maxMemory, size_t memoryPerBuffer, std::function<T()> allocateBuffer);
-		T getBuffer();
-		void returnBuffer(T&&buffer);
-
-	private:
-		ofThreadChannel<T> returnChannel;
-		size_t memoryPerBuffer = 0;
-		std::function<T()> allocateBuffer;
-		size_t poolSize = 0;
-		size_t maxMemory = 0;
-	};
+	std::thread downloadThread;
+	std::queue<size_t> buffersReady;
+	std::queue<size_t> buffersCopying;
+	std::queue<GLuint> copyQueryReady;
+	std::queue<GLuint> copyQueryCopying;
+	uint64_t timeDownload = 0, halfDecodingTime = 0, encodingTime = 0, saveTime = 0, copyTextureTime = 0;
 };

@@ -35,25 +35,37 @@ void ofxTextureRecorder::setup(const Settings & settings){
 	imageFormat = settings.imageFormat;
 	folderPath = settings.folderPath;
 	glType = settings.glType;
+	maxMemoryUsage = settings.maxMemoryUsage;
 	if (!folderPath.empty()) folderPath = ofFilePath::addTrailingSlash(folderPath);
 
 	frame = 0;
     firstFrame = true;
+	auto bufferSize = 0;
 	switch(glType){
 		case GL_UNSIGNED_BYTE:
-			pixelBufferBack.allocate(ofPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
-			pixelBufferFront.allocate(ofPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
+			bufferSize = ofPixels::bytesFromPixelFormat(width,height,pixelFormat);
 		break;
 		case GL_SHORT:
 		case GL_UNSIGNED_SHORT:
-			pixelBufferBack.allocate(ofShortPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
-			pixelBufferFront.allocate(ofShortPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
+			bufferSize = ofShortPixels::bytesFromPixelFormat(width,height,pixelFormat);
 		break;
 		case GL_FLOAT:
-		case GL_HALF_FLOAT:
-			pixelBufferBack.allocate(ofFloatPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
-			pixelBufferFront.allocate(ofFloatPixels::bytesFromPixelFormat(width,height,pixelFormat), GL_DYNAMIC_READ);
+			bufferSize = ofFloatPixels::bytesFromPixelFormat(width,height,pixelFormat);
 		break;
+		case GL_HALF_FLOAT:
+			bufferSize = ofFloatPixels::bytesFromPixelFormat(width,height,pixelFormat)/2;
+		break;
+	}
+
+	// number of gpu buffers to copy the texture
+	size_t numGpuBuffers = 2;
+	for(size_t i=0; i<std::min(numGpuBuffers, size_t(2)); i++){
+		pixelBuffers.emplace_back();
+		pixelBuffers.back().allocate(bufferSize, GL_DYNAMIC_READ);
+		buffersReady.push(i);
+		GLuint copyQuery;
+		glGenQueries(1,&copyQuery);
+		copyQueryReady.push(copyQuery);
 	}
 	auto numChannels = 0;
 	switch(pixelFormat){
@@ -76,26 +88,57 @@ void ofxTextureRecorder::save(const ofTexture & tex){
 }
 
 void ofxTextureRecorder::save(const ofTexture & tex, int frame_){
-    if(!firstFrame){
-        bool ready;
-        channelReady.receive(ready);
-		pixelBufferBack.unmap();
-    }
-    firstFrame = false;
-    tex.copyTo(pixelBufferBack);
+	if(buffersReady.size()<std::max(pixelBuffers.size()/2 + 1,size_t(2))){
+		{
+			GLuint time;
+			auto copyQuery = copyQueryCopying.front();
+			glGetQueryObjectuiv(copyQuery, GL_QUERY_RESULT, &time);
 
-    //pixelBufferFront.invalidate();
-	//ofSetPixelStoreiAlignment(GL_PIXEL_UNPACK_BUFFER, width, 1, 3);
-    pixelBufferFront.bind(GL_PIXEL_UNPACK_BUFFER);
-    auto pixels = pixelBufferFront.map<unsigned char>(GL_READ_ONLY);
-    if(pixels){
-		std::ostringstream oss;
-		oss << folderPath << ofToString(frame_, 5, '0') << "." << ofImageFormatExtension(imageFormat);
-		channel.send(std::make_pair(oss.str(), pixels));
-    }else{
-        ofLogError(__FUNCTION__) << "Couldn't map buffer";
-    }
-    swap(pixelBufferBack,pixelBufferFront);
+			copyTextureTime = copyTextureTime * 0.9 + time/1000. * 0.1;
+			copyQueryReady.push(copyQuery);
+		}
+		size_t back = 0;
+		if(!buffersReady.empty()){
+			back = buffersReady.front();
+			buffersReady.pop();
+		}else if(channelReady.receive(back)){
+			pixelBuffers[back].unmap();
+		}else{
+			return;
+		}
+		auto copyQuery = copyQueryReady.front();
+		copyQueryReady.pop();
+		glBeginQuery(GL_TIME_ELAPSED, copyQuery);
+		tex.copyTo(pixelBuffers[back]);
+		glEndQuery(GL_TIME_ELAPSED);
+		copyQueryCopying.push(copyQuery);
+
+		if(!buffersCopying.empty()){
+			auto front = buffersCopying.front();
+			buffersCopying.pop();
+			pixelBuffers[front].bind(GL_PIXEL_UNPACK_BUFFER);
+			auto pixels = pixelBuffers[front].map<unsigned char>(GL_READ_ONLY);
+			if(pixels){
+				std::ostringstream oss;
+				oss << folderPath << ofToString(frame_, 5, '0') << "." << ofImageFormatExtension(imageFormat);
+				Buffer buffer{front, oss.str(), pixels};
+				channel.send(buffer);
+			}else{
+				ofLogError(__FUNCTION__) << "Couldn't map buffer";
+			}
+		}
+		buffersCopying.push(back);
+	}else{
+		auto back = buffersReady.front();
+		buffersReady.pop();
+		auto copyQuery = copyQueryReady.front();
+		copyQueryReady.pop();
+		glBeginQuery(GL_TIME_ELAPSED, copyQuery);
+		tex.copyTo(pixelBuffers[back]);
+		glEndQuery(GL_TIME_ELAPSED);
+		buffersCopying.push(back);
+		copyQueryCopying.push(copyQuery);
+	}
 }
 
 void ofxTextureRecorder::stopThreads(){
@@ -131,6 +174,9 @@ void ofxTextureRecorder::stopThreads(){
 				ofSleepMillis(100);
 			}
 			floatPixelsChannel.close();
+			for(auto &t: halfDecodingThreads){
+				t.join();
+			}
 		break;
 	}
 
@@ -178,40 +224,52 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 	}
 
 	downloadThread = std::thread([&]{
-		std::pair<std::string, unsigned char *> data;
+		Buffer buffer;
 		switch(glType){
 			case GL_UNSIGNED_BYTE:{
-				while(channel.receive(data)){
+				while(channel.receive(buffer)){
+					auto then = ofGetElapsedTimeMicros();
 					ofPixels pixels = getBuffer();
-					pixels.setFromPixels(data.second, width, height, pixelFormat);
-					channelReady.send(true);
-					pixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+					pixels.setFromPixels((unsigned char*)buffer.data, width, height, pixelFormat);
+					channelReady.send(buffer.id);
+					auto now = ofGetElapsedTimeMicros();
+					timeDownload = timeDownload * 0.9 + (now - then) * 0.1;
+					pixelsChannel.send(std::make_pair(buffer.path, std::move(pixels)));
 				}
 			}break;
 			case GL_SHORT:
 			case GL_UNSIGNED_SHORT:{
-				while(channel.receive(data)){
+				while(channel.receive(buffer)){
+					auto then = ofGetElapsedTimeMicros();
 					ofShortPixels pixels = getShortBuffer();
-					pixels.setFromPixels((unsigned short*)data.second, width, height, pixelFormat);
-					channelReady.send(true);
-					shortPixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+					pixels.setFromPixels((unsigned short*)buffer.data, width, height, pixelFormat);
+					channelReady.send(buffer.id);
+					auto now = ofGetElapsedTimeMicros();
+					timeDownload = timeDownload * 0.9 + (now - then) * 0.1;
+					shortPixelsChannel.send(std::make_pair(buffer.path, std::move(pixels)));
 				}
 			}break;
 			case GL_FLOAT:{
-				while(channel.receive(data)){
+				while(channel.receive(buffer)){
+					auto then = ofGetElapsedTimeMicros();
 					ofFloatPixels pixels = getFloatBuffer();
-					pixels.setFromPixels((float*)data.second, width, height, pixelFormat);
-					channelReady.send(true);
-					floatPixelsChannel.send(std::make_pair(data.first, std::move(pixels)));
+					pixels.setFromPixels((float*)buffer.data, width, height, pixelFormat);
+					channelReady.send(buffer.id);
+					auto now = ofGetElapsedTimeMicros();
+					timeDownload = timeDownload * 0.9 + (now - then) * 0.1;
+					floatPixelsChannel.send(std::make_pair(buffer.path, std::move(pixels)));
 				}
 			}break;
 			case GL_HALF_FLOAT:{
-				while(channel.receive(data)){
+				while(channel.receive(buffer)){
+					auto then = ofGetElapsedTimeMicros();
 					std::vector<half_float::half> halfdata = getHalfFloatBuffer();
-					auto halfptr = (half_float::half*)data.second;
-					halfdata.assign(halfptr, halfptr + size);
-					channelReady.send(true);
-					halffloatPixelsChannel.send(std::make_pair(data.first, std::move(halfdata)));
+					auto halfptr = (half_float::half*)buffer.data;
+					memcpy(halfdata.data(), halfptr, size * sizeof(half_float::half));
+					channelReady.send(buffer.id);
+					auto now = ofGetElapsedTimeMicros();
+					timeDownload = timeDownload * 0.9 + (now - then) * 0.1;
+					halffloatPixelsChannel.send(std::make_pair(buffer.path, std::move(halfdata)));
 				}
 			}break;
 		}
@@ -222,12 +280,15 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 			halfDecodingThreads.emplace_back(([&]{
 				std::pair<std::string, std::vector<half_float::half>> halfdata;
 				while(halffloatPixelsChannel.receive(halfdata)){
+					auto then = ofGetElapsedTimeMicros();
 					ofFloatPixels pixels = getFloatBuffer();
 					auto halfptr = halfdata.second.data();
 					for(auto & p: pixels){
 						p = *halfptr++;
 					}
 					returnHalfFloatPixelsChannel.send(std::move(halfdata.second));
+					auto now = ofGetElapsedTimeMicros();
+					halfDecodingTime = halfDecodingTime * 0.9 + (now - then) * 0.1;
 					floatPixelsChannel.send(std::make_pair(halfdata.first, std::move(pixels)));
 				}
 			}));
@@ -241,20 +302,28 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 			switch(glType){
 				case GL_UNSIGNED_BYTE:{
 					std::pair<std::string, ofPixels> pixels;
+					ofBuffer buffer;
 					while(pixelsChannel.receive(pixels)){
-						ofBuffer buffer;
+						auto then = ofGetElapsedTimeMicros();
+						buffer.clear();
 						ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
 						returnPixelsChannel.send(std::move(pixels.second));
+						auto now = ofGetElapsedTimeMicros();
+						encodingTime = halfDecodingTime * 0.9 + (now - then) * 0.1;
 						encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
 					}
 				}break;
 				case GL_SHORT:
 				case GL_UNSIGNED_SHORT:{
 					std::pair<std::string, ofShortPixels> pixels;
+					ofBuffer buffer;
 					while(shortPixelsChannel.receive(pixels)){
-						ofBuffer buffer;
+						auto then = ofGetElapsedTimeMicros();
+						buffer.clear();
 						ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
 						returnShortPixelsChannel.send(std::move(pixels.second));
+						auto now = ofGetElapsedTimeMicros();
+						encodingTime = halfDecodingTime * 0.9 + (now - then) * 0.1;
 						encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
 					}
 				}break;
@@ -263,9 +332,12 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 					std::pair<std::string, ofFloatPixels> pixels;
 					ofBuffer buffer;
 					while(floatPixelsChannel.receive(pixels)){
+						auto then = ofGetElapsedTimeMicros();
 						buffer.clear();
 						ofSaveImage(pixels.second, buffer, imageFormat, OF_IMAGE_QUALITY_BEST);
 						returnFloatPixelsChannel.send(std::move(pixels.second));
+						auto now = ofGetElapsedTimeMicros();
+						encodingTime = halfDecodingTime * 0.9 + (now - then) * 0.1;
 						encodedChannel.send(std::make_pair(pixels.first, std::move(buffer)));
 					}
 				}break;
@@ -275,8 +347,11 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 	saveThread = std::thread([&]{
 		std::pair<std::string, ofBuffer> encoded;
 		while(encodedChannel.receive(encoded)){
+			auto then = ofGetElapsedTimeMicros();
 			ofFile file(encoded.first, ofFile::WriteOnly);
 			file.writeFromBuffer(encoded.second);
+			auto now = ofGetElapsedTimeMicros();
+			saveTime = halfDecodingTime * 0.9 + (now - then) * 0.1;
 		}
 	});
 }
@@ -284,7 +359,7 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 ofPixels ofxTextureRecorder::getBuffer(){
 	ofPixels pixels;
 	if(!returnPixelsChannel.tryReceive(pixels)){
-		if(poolSize<encodeThreads.size()*2){
+		if(poolSize * ofPixels::bytesFromPixelFormat(width, height, pixelFormat) < maxMemoryUsage){
 			pixels.allocate(width, height, pixelFormat);
 			poolSize += 1;
 		}else{
@@ -297,7 +372,7 @@ ofPixels ofxTextureRecorder::getBuffer(){
 ofShortPixels ofxTextureRecorder::getShortBuffer(){
 	ofShortPixels pixels;
 	if(!returnShortPixelsChannel.tryReceive(pixels)){
-		if(shortPoolSize<encodeThreads.size()*2){
+		if(shortPoolSize * ofShortPixels::bytesFromPixelFormat(width, height, pixelFormat) < maxMemoryUsage){
 			pixels.allocate(width, height, pixelFormat);
 			shortPoolSize += 1;
 		}else{
@@ -308,22 +383,39 @@ ofShortPixels ofxTextureRecorder::getShortBuffer(){
 };
 
 ofFloatPixels ofxTextureRecorder::getFloatBuffer(){
-	ofFloatPixels pixels;
-	if(!returnFloatPixelsChannel.tryReceive(pixels)){
-		if(floatPoolSize<encodeThreads.size()*2){
-			pixels.allocate(width, height, pixelFormat);
-			floatPoolSize += 1;
-		}else{
-			returnFloatPixelsChannel.receive(pixels);
+	if(glType==GL_FLOAT){
+		ofFloatPixels pixels;
+		if(!returnFloatPixelsChannel.tryReceive(pixels)){
+			if(floatPoolSize * ofFloatPixels::bytesFromPixelFormat(width, height, pixelFormat) < maxMemoryUsage){
+				pixels.allocate(width, height, pixelFormat);
+				floatPoolSize += 1;
+			}else{
+				returnFloatPixelsChannel.receive(pixels);
+			}
 		}
+		return pixels;
+	}else{
+		ofFloatPixels pixels;
+		if(!returnFloatPixelsChannel.tryReceive(pixels)){
+			auto floatSize = floatPoolSize * ofFloatPixels::bytesFromPixelFormat(width, height, pixelFormat);
+			auto halfFloatSize = halfFloatPoolSize * size * sizeof(half_float::half);
+			if(halfFloatSize + floatSize < maxMemoryUsage){
+				pixels.allocate(width, height, pixelFormat);
+				floatPoolSize += 1;
+			}else{
+				returnFloatPixelsChannel.receive(pixels);
+			}
+		}
+		return pixels;
 	}
-	return pixels;
 };
 
 std::vector<half_float::half> ofxTextureRecorder::getHalfFloatBuffer(){
 	std::vector<half_float::half> pixels;
 	if(!returnHalfFloatPixelsChannel.tryReceive(pixels)){
-		if(halfFloatPoolSize<encodeThreads.size()*2){
+		auto floatSize = floatPoolSize * ofFloatPixels::bytesFromPixelFormat(width, height, pixelFormat);
+		auto halfFloatSize = halfFloatPoolSize * size * sizeof(half_float::half);
+		if(halfFloatSize + floatSize < maxMemoryUsage){
 			pixels.resize(size);
 			halfFloatPoolSize += 1;
 		}else{
@@ -332,6 +424,22 @@ std::vector<half_float::half> ofxTextureRecorder::getHalfFloatBuffer(){
 	}
 	return pixels;
 };
+
+uint64_t ofxTextureRecorder::getAvgTimeEncode() const{
+	return encodingTime;
+}
+
+uint64_t ofxTextureRecorder::getAvgTimeSave() const{
+	return saveTime;
+}
+
+uint64_t ofxTextureRecorder::getAvgTimeGpuDownload() const{
+	return timeDownload;
+}
+
+uint64_t ofxTextureRecorder::getAvgTimeTextureCopy() const{
+	return copyTextureTime;
+}
 
 ofxTextureRecorder::Settings::Settings(int w, int h)
 :w(w)
@@ -350,7 +458,6 @@ ofxTextureRecorder::Settings::Settings(const ofTextureData & texData)
 		break;
 		case OF_IMAGE_COLOR_ALPHA:
 			pixelFormat = OF_PIXELS_RGBA;
-			cout << "rgba" << endl;
 		break;
 		case OF_IMAGE_GRAYSCALE:
 			pixelFormat = OF_PIXELS_GRAY;
@@ -360,31 +467,4 @@ ofxTextureRecorder::Settings::Settings(const ofTextureData & texData)
 	}
 	glType = ofGetGlTypeFromInternal(texData.glInternalFormat);
 
-}
-
-template<class T>
-void ofxTextureRecorder::PixelsPool<T>::setup(size_t initialSize, size_t maxMemory, size_t memoryPerBuffer, std::function<T()> allocateBuffer){
-	this->initialSize = initialSize;
-	this->maxMemory = maxMemory;
-	this->memoryPerBuffer = memoryPerBuffer;
-	this->allocateBuffer = allocateBuffer;
-}
-
-template<class T>
-T ofxTextureRecorder::PixelsPool<T>::getBuffer(){
-	T pixels = this->allocateBuffer();
-	if(!returnChannel.tryReceive(pixels)){
-		if(poolSize * memoryPerBuffer < maxMemory){
-			poolSize += 1;
-			return allocateBuffer();
-		}else{
-			returnChannel.receive(pixels);
-		}
-	}
-	return pixels;
-}
-
-template<class T>
-void ofxTextureRecorder::PixelsPool<T>::returnBuffer(T&&buffer){
-	returnChannel.send(buffer);
 }

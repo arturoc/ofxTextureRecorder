@@ -2,11 +2,12 @@
 
 //--------------------------------------------------------------
 void ofApp::setup(){
-	fbo.allocate(3600, 1080, GL_RGB16F);
+	fbo.allocate(ofGetWidth(), ofGetHeight(), GL_RGB);
 
 	ofxTextureRecorder::Settings settings(fbo.getTexture());
-	settings.imageFormat = OF_IMAGE_FORMAT_PNG;
+	settings.imageFormat = OF_IMAGE_FORMAT_JPEG;
 	settings.numThreads = 12;
+	settings.maxMemoryUsage = 9000000000;
 	recorder.setup(settings);
 }
 
@@ -16,7 +17,9 @@ void ofApp::update(){
 	ofClear(0,255);
 	ofDrawCircle(ofGetFrameNum(), ofGetWidth()/2, 50);
 	fbo.end();
-	recorder.save(fbo.getTexture());
+	if(ofGetFrameNum()>0){
+		recorder.save(fbo.getTexture());
+	}
 	if(ofGetFrameNum() > ofGetWidth() + 50){
 		ofExit(0);
 	}
@@ -28,6 +31,10 @@ void ofApp::draw(){
 
 	if(ofGetFrameNum()%60==0){
 		cout << ofGetFrameRate() << endl;
+		cout << "texture copy: " << recorder.getAvgTimeTextureCopy() << endl;
+		cout << "gpu download: " << recorder.getAvgTimeGpuDownload() << endl;
+		cout << "image encoding: " << recorder.getAvgTimeEncode() << endl;
+		cout << "file save: " << recorder.getAvgTimeSave() << endl;
 	}
 
 }
