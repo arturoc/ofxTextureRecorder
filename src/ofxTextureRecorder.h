@@ -53,7 +53,7 @@ public:
 		string extrasettings = "";
 
 		GLenum textureInternalFormat = GL_RGB;
-		string folderPath;
+		string videoPath;
 		/// maximum RAM to use in bytes
 		size_t maxMemoryUsage = 2000000000;
 

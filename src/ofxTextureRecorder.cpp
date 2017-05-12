@@ -84,6 +84,7 @@ void ofxTextureRecorder::setup(const Settings & settings){
 	createThreads(settings.numThreads);
 }
 
+#if OFX_VIDEO_RECORDER
 void ofxTextureRecorder::setup(const ofxTextureRecorder::VideoSettings & settings){
 	if(!encodeThreads.empty()){
 		stopThreads();
@@ -91,7 +92,7 @@ void ofxTextureRecorder::setup(const ofxTextureRecorder::VideoSettings & setting
 	width = settings.w;
 	height = settings.h;
 	pixelFormat = settings.pixelFormat;
-	folderPath = settings.folderPath;
+	folderPath = "";
 	glType = settings.glType;
 	isVideo = true;
 	maxMemoryUsage = settings.maxMemoryUsage;
@@ -139,8 +140,8 @@ void ofxTextureRecorder::setup(const ofxTextureRecorder::VideoSettings & setting
 	};
 	size = width * height * numChannels;
 
-	string absFilePath = ofFilePath::getAbsolutePath(folderPath);
-	string moviePath = ofFilePath::getAbsolutePath(folderPath);
+	string absFilePath = ofFilePath::getAbsolutePath(settings.videoPath);
+	string moviePath = ofFilePath::getAbsolutePath(settings.videoPath);
 
 	stringstream outputSettings;
 	outputSettings
@@ -153,6 +154,7 @@ void ofxTextureRecorder::setup(const ofxTextureRecorder::VideoSettings & setting
 	videoRecorder.start();
 	createThreads(1);
 }
+#endif
 
 void ofxTextureRecorder::save(const ofTexture & tex){
 	save(tex, frame++);
@@ -190,10 +192,15 @@ void ofxTextureRecorder::save(const ofTexture & tex, int frame_){
 			pixelBuffers[front].bind(GL_PIXEL_UNPACK_BUFFER);
 			auto pixels = pixelBuffers[front].map<unsigned char>(GL_READ_ONLY);
 			if(pixels){
-				std::ostringstream oss;
-				oss << folderPath << ofToString(frame_, 5, '0') << "." << ofImageFormatExtension(imageFormat);
-				Buffer buffer{front, oss.str(), pixels};
-				channel.send(buffer);
+				if(isVideo){
+					Buffer buffer{front, "", pixels};
+					channel.send(buffer);
+				}else{
+					std::ostringstream oss;
+					oss << folderPath << ofToString(frame_, 5, '0') << "." << ofImageFormatExtension(imageFormat);
+					Buffer buffer{front, oss.str(), pixels};
+					channel.send(buffer);
+				}
 			}else{
 				ofLogError(__FUNCTION__) << "Couldn't map buffer";
 			}
@@ -376,6 +383,8 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 	for(size_t i=0;i<numThreads;i++){
 		encodeThreads.emplace_back([&]{
 			if(isVideo){
+
+#if OFX_VIDEO_RECORDER
 				ofPixels rgb8Pixels;
 				switch(glType){
 					case GL_UNSIGNED_BYTE:{
@@ -417,6 +426,8 @@ void ofxTextureRecorder::createThreads(size_t numThreads){
 						}
 					}break;
 				}
+#endif
+
 			}else{
 				switch(glType){
 					case GL_UNSIGNED_BYTE:{
