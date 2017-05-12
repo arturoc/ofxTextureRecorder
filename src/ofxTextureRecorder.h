@@ -9,8 +9,6 @@
 #include "half.hpp"
 #include <future>
 
-#define OFX_VIDEO_RECORDER 1
-
 #if OFX_VIDEO_RECORDER
 #include "ofxVideoRecorder.h"
 #endif
