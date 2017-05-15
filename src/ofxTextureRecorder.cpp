@@ -600,6 +600,7 @@ ofxTextureRecorder::Settings::Settings(const ofTextureData & texData)
 
 }
 
+#if OFX_VIDEO_RECORDER
 ofxTextureRecorder::VideoSettings::VideoSettings(int w, int h, float fps)
 :w(w)
 ,h(h)
@@ -629,3 +630,4 @@ ofxTextureRecorder::VideoSettings::VideoSettings(const ofTextureData & texData, 
 	glType = ofGetGlTypeFromInternal(texData.glInternalFormat);
 
 }
+#endif
