@@ -12,6 +12,9 @@
 #if OFX_VIDEO_RECORDER
 #include "ofxVideoRecorder.h"
 #endif
+#if OFX_HPVLIB
+#include "HPVCreator.hpp"
+#endif
 
 class ofxTextureRecorder{
 public:
@@ -37,7 +40,7 @@ public:
 		friend class ofxTextureRecorder;
 	};
 
-#if OFX_VIDEO_RECORDER
+#if OFX_VIDEO_RECORDER || OFX_HPVLIB
 	struct VideoSettings{
 		VideoSettings(int w, int h, float fps);
 		VideoSettings(const ofTexture & tex, float fps);
@@ -54,6 +57,8 @@ public:
 		string videoPath;
 		/// maximum RAM to use in bytes
 		size_t maxMemoryUsage = 2000000000;
+		/// number encoding threads, default == number of hw cores - 2
+		size_t numThreads = std::max(1u, std::thread::hardware_concurrency() - 2);
 
 	private:
 		ofPixelFormat pixelFormat;
@@ -91,15 +96,21 @@ private:
 		std::string path;
 		void * data;
 	};
+	template<typename T>
+	struct Frame{
+		size_t id;
+		std::string path;
+		T pixels;
+	};
 
 	ofThreadChannel<Buffer> channel;
-    ofThreadChannel<std::pair<std::string, ofPixels>> pixelsChannel;
+	ofThreadChannel<Frame<ofPixels>> pixelsChannel;
 	size_t poolSize = 0;
-	ofThreadChannel<std::pair<std::string, ofShortPixels>> shortPixelsChannel;
+	ofThreadChannel<Frame<ofShortPixels>> shortPixelsChannel;
 	size_t shortPoolSize = 0;
-	ofThreadChannel<std::pair<std::string, ofFloatPixels>> floatPixelsChannel;
+	ofThreadChannel<Frame<ofFloatPixels>> floatPixelsChannel;
 	size_t floatPoolSize = 0;
-	ofThreadChannel<std::pair<std::string, std::vector<half_float::half>>> halffloatPixelsChannel;
+	ofThreadChannel<Frame<std::vector<half_float::half>>> halffloatPixelsChannel;
 	size_t halfFloatPoolSize = 0;
 	ofThreadChannel<ofPixels> returnPixelsChannel;
 	ofThreadChannel<ofShortPixels> returnShortPixelsChannel;
@@ -109,6 +120,7 @@ private:
 	ofThreadChannel<size_t> channelReady;
 	bool firstFrame = true;
 	bool isVideo = false;
+	bool isHPV = false;
 	std::vector<ofBufferObject> pixelBuffers;
     ofPixelFormat pixelFormat;
     ofImageFormat imageFormat;
@@ -135,5 +147,10 @@ private:
 
 #if OFX_VIDEO_RECORDER
 	ofxVideoRecorder videoRecorder;
+#endif
+#if OFX_HPVLIB
+	HPV::HPVCreator hpvCreator;
+	ThreadSafe_Queue<HPV::HPVCompressionProgress> hpvProgress;
+	std::thread hpvProgressThread;
 #endif
 };
